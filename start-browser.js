@@ -5,6 +5,7 @@ const path = require("path")
 // Configuration - read from environment variables with defaults
 const CONFIG = {
   cdpPort: parseInt(process.env.CDP_PORT || "9222", 10),
+  wsPort: parseInt(process.env.WS_PORT || "3000", 10), // Fixed WebSocket port for Playwright
   headless: process.env.HEADLESS === "true",
   profileDir: process.env.PROFILE_DIR || "/app/profile",
   windowSize: {
@@ -72,6 +73,7 @@ async function startBrowser() {
     // Start browserServer for WebSocket connections
     browserServer = await chromium.launchServer({
       headless: CONFIG.headless,
+      port: CONFIG.wsPort, // Fixed port for WebSocket connections
       args: [
         `--window-size=${CONFIG.windowSize.width},${CONFIG.windowSize.height}`,
         "--window-position=0,0",
@@ -113,6 +115,7 @@ async function startBrowser() {
     console.log(`  - Headless: ${CONFIG.headless}`)
     console.log(`  - Profile Dir: ${CONFIG.profileDir}`)
     console.log(`  - CDP Port: ${CONFIG.cdpPort}`)
+    console.log(`  - WS Port: ${CONFIG.wsPort}`)
     console.log(`  - Start URL: ${CONFIG.startUrl}`)
     console.log(`  - Browser Language: ${CONFIG.browserLang}`)
     console.log(`  - WS Endpoint: ${browserServer.wsEndpoint()}`)
