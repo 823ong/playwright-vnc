@@ -8,16 +8,23 @@ Docker 容器中运行的 Playwright 浏览器，支持通过 VNC 和 Chrome Dev
 - 🖥️ **VNC 访问**: 通过 VNC 协议查看和操作浏览器界面
 - 🌍 **Web 界面**: 通过 noVNC 在浏览器中访问 VNC
 - 🔌 **CDP 支持**: Chrome DevTools Protocol 远程调试接口
-- 🔄 **端口转发**: 通过 socat 实现 CDP 端口的外部访问
+- 🔗 **WebSocket 端点**: 支持外部 Playwright 通过 WebSocket 连接
+- 🎛️ **控制 API**: 重启浏览器、清空 Profile 等管理功能
 - 💾 **持久化**: 支持浏览器用户数据持久化
 
-## 端口说明
+## 统一端口架构
 
-| 端口 | 协议 | 说明 |
-|------|------|------|
-| 6080 | HTTP | noVNC Web 界面访问 |
-| 5900 | VNC | 标准 VNC 协议端口 |
-| 9223 | HTTP | CDP 调试接口（外部访问） |
+所有服务通过 **单一端口 8080** 对外暴露：
+
+| 路径 | 说明 |
+|------|------|
+| `/` | 服务首页，显示所有端点信息 |
+| `/vnc/*` | noVNC Web 界面访问 |
+| `/cdp/*` | CDP 调试接口 |
+| `/ws` | Playwright WebSocket 端点 |
+| `/api/status` | 获取服务状态 |
+| `/api/restart-browser` | 重启浏览器 |
+| `/api/clear-profile` | 清空 Profile 并重启 |
 
 ## 快速开始
 
@@ -31,25 +38,25 @@ docker build -t playwright-vnc .
 
 ```bash
 docker run -d \
-  -p 6080:6080 \
-  -p 5900:5900 \
-  -p 9223:9223 \
+  -p 8080:8080 \
   --name playwright-browser \
   playwright-vnc
 ```
 
-### 访问浏览器
+### 访问服务
 
-- **VNC Web 界面**: http://localhost:6080/vnc.html
-- **VNC 客户端**: localhost:5900
-- **CDP 接口**: http://localhost:9223/json
+- **服务首页**: http://localhost:8080/
+- **VNC Web 界面**: http://localhost:8080/vnc/vnc.html
+- **CDP 接口**: http://localhost:8080/cdp/json
+- **API 状态**: http://localhost:8080/api/status
 
 ## 环境变量配置
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
+| `GATEWAY_PORT` | 统一网关端口 | 8080 |
 | `CDP_PORT` | CDP 内部端口 | 9222 |
-| `EXTERNAL_PORT` | CDP 外部访问端口 | 9223 |
+| `VNC_PORT` | VNC 内部端口 | 6080 |
 | `HEADLESS` | 是否无头模式 | false |
 | `WINDOW_WIDTH` | 浏览器窗口宽度 | 1280 |
 | `WINDOW_HEIGHT` | 浏览器窗口高度 | 720 |
@@ -63,10 +70,7 @@ docker run -d \
   -e WINDOW_WIDTH=1920 \
   -e WINDOW_HEIGHT=1080 \
   -e START_URL=https://example.com \
-  -e EXTERNAL_PORT=9223 \
-  -p 6080:6080 \
-  -p 5900:5900 \
-  -p 9223:9223 \
+  -p 8080:8080 \
   --name playwright-browser \
   playwright-vnc
 ```
@@ -81,26 +85,33 @@ services:
     build: .
     container_name: playwright-browser
     ports:
-      - "6080:6080"
-      - "5900:5900"
-      - "9223:9223"
+      - "8080:8080"
     environment:
       - HEADLESS=false
       - WINDOW_WIDTH=1920
       - WINDOW_HEIGHT=1080
       - START_URL=https://example.com
-      - EXTERNAL_PORT=9223
     restart: unless-stopped
 ```
 
-## CDP 连接方式
+## 连接方式
 
-### Node.js (Playwright)
+### Node.js (Playwright) - CDP 连接
 
 ```javascript
 const { chromium } = require('playwright');
 
-const browser = await chromium.connectOverCDP('http://localhost:9223');
+const browser = await chromium.connectOverCDP('http://localhost:8080/cdp');
+const page = await browser.newPage();
+await page.goto('https://example.com');
+```
+
+### Node.js (Playwright) - WebSocket 连接
+
+```javascript
+const { chromium } = require('playwright');
+
+const browser = await chromium.connect('ws://localhost:8080/ws');
 const page = await browser.newPage();
 await page.goto('https://example.com');
 ```
@@ -111,7 +122,7 @@ await page.goto('https://example.com');
 const puppeteer = require('puppeteer');
 
 const browser = await puppeteer.connect({
-  browserURL: 'http://localhost:9223'
+  browserURL: 'http://localhost:8080/cdp'
 });
 const page = await browser.newPage();
 await page.goto('https://example.com');
@@ -120,7 +131,7 @@ await page.goto('https://example.com');
 ### Java
 
 ```java
-ChromiumBrowser browser = chromium().connectOverCDP("http://localhost:9223");
+ChromiumBrowser browser = chromium().connectOverCDP("http://localhost:8080/cdp");
 Page page = browser.newPage();
 page.navigate("https://example.com");
 ```
@@ -131,9 +142,42 @@ page.navigate("https://example.com");
 from playwright.sync_api import sync_playwright
 
 with sync_playwright() as p:
-    browser = p.chromium.connect_over_cdp('http://localhost:9223')
+    browser = p.chromium.connect_over_cdp('http://localhost:8080/cdp')
     page = browser.new_page()
     page.goto('https://example.com')
+```
+
+## 控制 API
+
+### 获取状态
+
+```bash
+curl http://localhost:8080/api/status
+```
+
+响应示例：
+```json
+{
+  "status": "running",
+  "browser": {
+    "running": true,
+    "wsEndpoint": "ws://...",
+    "profileDir": "/app/profile"
+  },
+  "timestamp": "2024-01-01T00:00:00.000Z"
+}
+```
+
+### 重启浏览器
+
+```bash
+curl -X POST http://localhost:8080/api/restart-browser
+```
+
+### 清空 Profile
+
+```bash
+curl -X POST http://localhost:8080/api/clear-profile
 ```
 
 ## 持久化数据
@@ -143,8 +187,7 @@ with sync_playwright() as p:
 ```bash
 docker run -d \
   -v /path/to/profile:/app/profile \
-  -p 6080:6080 \
-  -p 9223:9223 \
+  -p 8080:8080 \
   playwright-vnc
 ```
 
@@ -153,8 +196,9 @@ docker run -d \
 ```
 .
 ├── Dockerfile          # Docker 镜像构建文件
-├── start-vnc.sh        # VNC 和浏览器启动脚本
-├── start-browser.js    # Playwright 浏览器启动脚本
+├── gateway-server.js   # 统一网关服务器
+├── start-vnc.sh        # VNC 和服务启动脚本
+├── start-browser.js    # Playwright 浏览器管理模块
 └── README.md           # 项目说明文档
 ```
 
@@ -162,11 +206,12 @@ docker run -d \
 
 - **Playwright**: 浏览器自动化框架
 - **Chromium**: 浏览器内核
+- **Express**: HTTP 服务器框架
+- **http-proxy-middleware**: HTTP/WebSocket 代理
 - **Xvfb**: 虚拟显示服务器
 - **Fluxbox**: 窗口管理器
 - **x11vnc**: VNC 服务器
 - **noVNC**: Web VNC 客户端
-- **socat**: 端口转发工具
 
 ## License
 

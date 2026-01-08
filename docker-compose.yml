@@ -1,0 +1,26 @@
+services:
+  playwright-browser:
+    container_name: playwright-browser
+    image: playwright-vnc:latest
+    ports:
+      - "8081:8080"
+      - "6080:6080"
+    environment:
+      - HEADLESS=false
+      # 屏幕/窗口分辨率 (VNC 和浏览器共用)
+      - SCREEN_WIDTH=1280
+      - SCREEN_HEIGHT=720
+      - START_URL=about:blank
+    volumes:
+      # 持久化浏览器 profile 数据
+      - ./data/profile:/app/profile
+    restart: unless-stopped
+    # 共享内存，防止 Chromium 崩溃
+    shm_size: "2gb"
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

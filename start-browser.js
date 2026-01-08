@@ -1,71 +1,74 @@
 const { chromium } = require("playwright")
-const { spawn } = require("child_process")
+const fs = require("fs")
+const path = require("path")
 
 // 配置 - 从环境变量读取，提供默认值
 const CONFIG = {
-  cdpPort: parseInt(process.env.CDP_PORT || "9222", 10), // Chrome DevTools Protocol 端口 (本地监听)
-  externalPort: parseInt(process.env.EXTERNAL_PORT || "9223", 10), // 外部访问端口 (通过 socat 转发)
-  headless: process.env.HEADLESS === "true", // 使用有头模式
+  cdpPort: parseInt(process.env.CDP_PORT || "9222", 10),
+  headless: process.env.HEADLESS === "true",
+  profileDir: process.env.PROFILE_DIR || "/app/profile",
   windowSize: {
     width: parseInt(process.env.WINDOW_WIDTH || "1280", 10),
     height: parseInt(process.env.WINDOW_HEIGHT || "720", 10),
   },
-  startUrl: process.env.START_URL || "about:blank", // 默认打开页面
+  startUrl: process.env.START_URL || "about:blank",
 }
 
-// 启动 socat 端口转发
-function startPortForwarder() {
-  console.log(
-    `Starting socat port forwarder: 0.0.0.0:${CONFIG.externalPort} -> 127.0.0.1:${CONFIG.cdpPort}`
-  )
+// 浏览器状态
+let browserContext = null
+let browserServer = null
+let currentPage = null
 
-  const socat = spawn(
-    "socat",
-    [
-      `TCP-LISTEN:${CONFIG.externalPort},fork,reuseaddr,bind=0.0.0.0`,
-      `TCP:127.0.0.1:${CONFIG.cdpPort}`,
-    ],
-    {
-      stdio: "inherit",
-    }
-  )
-
-  socat.on("error", (err) => {
-    console.error("Failed to start socat:", err.message)
-    console.error("Please ensure socat is installed: apt-get install socat")
-  })
-
-  socat.on("exit", (code) => {
-    if (code !== 0 && code !== null) {
-      console.error(`socat exited with code ${code}`)
-    }
-  })
-
-  return socat
+/**
+ * 获取浏览器状态
+ */
+function getStatus() {
+  return {
+    running: browserContext !== null,
+    wsEndpoint: browserServer ? browserServer.wsEndpoint() : null,
+    profileDir: CONFIG.profileDir,
+    headless: CONFIG.headless,
+  }
 }
 
-// 启动Playwright浏览器
+/**
+ * 获取 WebSocket 端点 URL
+ */
+function getWsEndpoint() {
+  return browserServer ? browserServer.wsEndpoint() : null
+}
+
+/**
+ * 获取当前浏览器上下文
+ */
+function getBrowserContext() {
+  return browserContext
+}
+
+/**
+ * 启动 Playwright 浏览器
+ */
 async function startBrowser() {
-  let socatProcess = null
+  if (browserContext) {
+    console.log("Browser already running")
+    return browserContext
+  }
 
   try {
-    console.log("Launching Playwright Chromium with persistent context...")
+    console.log("Launching Playwright Chromium...")
 
-    // 使用 launchPersistentContext 启动带用户数据目录的浏览器
-    const context = await chromium.launchPersistentContext("/app/profile", {
+    // 确保 profile 目录存在
+    if (!fs.existsSync(CONFIG.profileDir)) {
+      fs.mkdirSync(CONFIG.profileDir, { recursive: true })
+    }
+
+    // 先启动 browserServer 用于 WebSocket 连接
+    browserServer = await chromium.launchServer({
       headless: CONFIG.headless,
-      viewport: CONFIG.windowSize,
-      locale: "zh-CN",
-      timezoneId: "Asia/Shanghai",
       args: [
-        // 窗口配置
         `--window-size=${CONFIG.windowSize.width},${CONFIG.windowSize.height}`,
         "--window-position=0,0",
-
-        // CDP调试端口 - 只监听本地，通过 socat 转发外部访问
         `--remote-debugging-port=${CONFIG.cdpPort}`,
-
-        // 其他有用的参数
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-session-crashed-bubble",
@@ -74,52 +77,142 @@ async function startBrowser() {
       ],
     })
 
-    // 启动 socat 端口转发
-    socatProcess = startPortForwarder()
+    console.log(
+      "Browser server started, WS endpoint:",
+      browserServer.wsEndpoint()
+    )
+
+    // 通过 WS 连接到浏览器
+    const browser = await chromium.connect(browserServer.wsEndpoint())
+
+    // 创建持久化上下文 (使用 CDP 连接到已存在的浏览器)
+    // 注意: launchServer 不支持 persistent context，所以 profile 需要通过其他方式持久化
+    // 这里我们使用默认 context
+    browserContext =
+      browser.contexts()[0] ||
+      (await browser.newContext({
+        viewport: CONFIG.windowSize,
+        locale: "zh-CN",
+        timezoneId: "Asia/Shanghai",
+      }))
 
     // 获取或创建页面
-    const pages = context.pages()
-    const page = pages.length > 0 ? pages[0] : await context.newPage()
-    await page.goto(CONFIG.startUrl)
+    const pages = browserContext.pages()
+    currentPage = pages.length > 0 ? pages[0] : await browserContext.newPage()
+    await currentPage.goto(CONFIG.startUrl)
 
     console.log("Browser started successfully!")
-    console.log(`- Headless: ${CONFIG.headless}`)
-    console.log(`- User Data Dir: /app/profile`)
-    console.log(`- CDP Port (internal): ${CONFIG.cdpPort}`)
-    console.log(`- CDP Port (external): ${CONFIG.externalPort}`)
-    console.log(`- Start URL: ${CONFIG.startUrl}`)
-    console.log("")
-    console.log(
-      "You can connect to this browser from outside the container using:"
-    )
-    console.log(
-      `  - Java: chromium().connectOverCDP("http://host:${CONFIG.externalPort}")`
-    )
-    console.log(
-      `  - Node.js: await chromium.connectOverCDP("http://host:${CONFIG.externalPort}")`
-    )
-    console.log(
-      `  - Puppeteer: await puppeteer.connect({browserURL: 'http://host:${CONFIG.externalPort}'})`
-    )
-    console.log(`  - CDP JSON: http://host:${CONFIG.externalPort}/json`)
+    console.log(`  - Headless: ${CONFIG.headless}`)
+    console.log(`  - Profile Dir: ${CONFIG.profileDir}`)
+    console.log(`  - CDP Port: ${CONFIG.cdpPort}`)
+    console.log(`  - Start URL: ${CONFIG.startUrl}`)
+    console.log(`  - WS Endpoint: ${browserServer.wsEndpoint()}`)
 
-    // 保持进程运行
-    const cleanup = async () => {
-      console.log("Shutting down...")
-      if (socatProcess) {
-        socatProcess.kill()
-      }
-      await context.close()
-      process.exit(0)
-    }
-
-    process.on("SIGTERM", cleanup)
-    process.on("SIGINT", cleanup)
+    return browserContext
   } catch (error) {
     console.error("Failed to start browser:", error)
-    process.exit(1)
+    throw error
   }
 }
 
-// 启动
-startBrowser()
+/**
+ * 停止浏览器
+ */
+async function stopBrowser() {
+  console.log("Stopping browser...")
+
+  try {
+    if (browserContext) {
+      const browser = browserContext.browser()
+      if (browser) {
+        await browser.close()
+      }
+      browserContext = null
+    }
+
+    if (browserServer) {
+      await browserServer.close()
+      browserServer = null
+    }
+
+    currentPage = null
+    console.log("Browser stopped")
+  } catch (error) {
+    console.error("Error stopping browser:", error)
+    // 强制清理引用
+    browserContext = null
+    browserServer = null
+    currentPage = null
+    throw error
+  }
+}
+
+/**
+ * 重启浏览器
+ */
+async function restartBrowser() {
+  console.log("Restarting browser...")
+  await stopBrowser()
+  // 等待一小段时间确保资源释放
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+  await startBrowser()
+  console.log("Browser restarted successfully")
+}
+
+/**
+ * 主启动函数 - 用于独立运行模式
+ */
+async function main() {
+  // 检查是否需要启动 gateway (默认启动)
+  const useGateway = process.env.USE_GATEWAY !== "false"
+
+  if (useGateway) {
+    // 导入并启动 gateway server
+    const gateway = require("/root/gateway-server")
+
+    // 先启动浏览器
+    await startBrowser()
+
+    // 然后启动 gateway，传入浏览器管理器
+    await gateway.start({
+      getStatus,
+      getWsEndpoint,
+      getBrowserContext,
+      startBrowser,
+      stopBrowser,
+      restartBrowser,
+    })
+  } else {
+    // 独立模式，只启动浏览器
+    await startBrowser()
+  }
+
+  // 优雅退出处理
+  const cleanup = async () => {
+    console.log("Shutting down...")
+    await stopBrowser()
+    process.exit(0)
+  }
+
+  process.on("SIGTERM", cleanup)
+  process.on("SIGINT", cleanup)
+}
+
+// 导出模块接口
+module.exports = {
+  CONFIG,
+  getStatus,
+  getWsEndpoint,
+  getBrowserContext,
+  startBrowser,
+  stopBrowser,
+  restartBrowser,
+}
+
+// 如果直接运行此文件
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Fatal error:", error)
+    process.exit(1)
+  })
+}

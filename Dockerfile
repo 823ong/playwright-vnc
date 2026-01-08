@@ -17,10 +17,15 @@ RUN apt-get update && apt-get install -y \
     xvfb \
     fluxbox \
     x11vnc \
-    novnc \
-    websockify \
-    socat \
+    git \
+    python3 \
+    python3-numpy \
     && rm -rf /var/lib/apt/lists/*
+
+# 安装最新版 noVNC (apt 版本太旧会导致兼容性问题)
+RUN git clone --depth 1 https://github.com/novnc/noVNC.git /opt/novnc && \
+    git clone --depth 1 https://github.com/novnc/websockify.git /opt/novnc/utils/websockify && \
+    ln -s /opt/novnc/vnc_lite.html /opt/novnc/index.html
 
 # 安装Node.js 20.x
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
@@ -35,13 +40,14 @@ WORKDIR /app
 
 # 安装Playwright和相关浏览器
 RUN npm init -y && \
-    npm install playwright && \
+    npm install playwright express http-proxy-middleware && \
     npx playwright install chromium && \
     npx playwright install-deps chromium
 
 # 复制启动脚本
 COPY start-vnc.sh /root/start-vnc.sh
 COPY start-browser.js /root/start-browser.js
+COPY gateway-server.js /root/gateway-server.js
 
 # 设置脚本权限
 RUN chmod +x /root/start-vnc.sh
@@ -50,10 +56,9 @@ RUN chmod +x /root/start-vnc.sh
 RUN mkdir -p /app/profile
 
 # 暴露端口
-# 6080: noVNC (web界面访问VNC)
-# 5900: VNC协议端口
-# 9223: Chrome DevTools Protocol (CDP) 调试接口 (通过 socat 转发)
-EXPOSE 6080 5900 9223
+# 8080: 统一网关端口 (CDP/WS/API)
+# 6080: noVNC Web 界面
+EXPOSE 8080 6080
 
 # 启动脚本
 CMD ["/root/start-vnc.sh"]
