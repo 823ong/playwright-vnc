@@ -4,7 +4,7 @@ const { createServer } = require("http")
 const path = require("path")
 const fs = require("fs")
 
-// 配置
+// Configuration
 const CONFIG = {
   port: parseInt(process.env.GATEWAY_PORT || "8080", 10),
   vncPort: parseInt(process.env.VNC_PORT || "6080", 10),
@@ -12,16 +12,16 @@ const CONFIG = {
   profileDir: "/app/profile",
 }
 
-// 浏览器管理器引用
+// Browser manager reference
 let browserManager = null
 
-// 创建 Express 应用
+// Create Express application
 const app = express()
 app.use(express.json())
 
-// ==================== API 路由 ====================
+// ==================== API Routes ====================
 
-// 获取状态
+// Get status
 app.get("/api/status", (req, res) => {
   res.json({
     status: "running",
@@ -34,7 +34,7 @@ app.get("/api/status", (req, res) => {
   })
 })
 
-// 重启浏览器
+// Restart browser
 app.post("/api/restart-browser", async (req, res) => {
   try {
     if (!browserManager) {
@@ -48,24 +48,24 @@ app.post("/api/restart-browser", async (req, res) => {
   }
 })
 
-// 清空 profile
+// Clear profile
 app.post("/api/clear-profile", async (req, res) => {
   try {
     if (!browserManager) {
       return res.status(500).json({ error: "Browser manager not initialized" })
     }
 
-    // 先停止浏览器
+    // Stop browser first
     await browserManager.stopBrowser()
 
-    // 清空 profile 目录
+    // Clear profile directory
     if (fs.existsSync(CONFIG.profileDir)) {
       fs.rmSync(CONFIG.profileDir, { recursive: true, force: true })
       fs.mkdirSync(CONFIG.profileDir, { recursive: true })
       console.log("Profile directory cleared:", CONFIG.profileDir)
     }
 
-    // 重新启动浏览器
+    // Restart browser
     await browserManager.startBrowser()
 
     res.json({
@@ -78,23 +78,23 @@ app.post("/api/clear-profile", async (req, res) => {
   }
 })
 
-// ==================== 代理配置 ====================
+// ==================== Proxy Configuration ====================
 
-// CDP 代理
+// CDP proxy
 const cdpProxy = createProxyMiddleware({
   target: `http://127.0.0.1:${CONFIG.cdpPort}`,
   changeOrigin: true,
   ws: true,
   pathRewrite: {
-    "^/cdp": "", // 移除 /cdp 前缀
+    "^/cdp": "", // Remove /cdp prefix
   },
   logLevel: "warn",
 })
 
-// 挂载代理路由
+// Mount proxy routes
 app.use("/cdp", cdpProxy)
 
-// ==================== 根路由 ====================
+// ==================== Root Route ====================
 
 app.get("/", (req, res) => {
   res.send(`
@@ -147,20 +147,20 @@ app.get("/", (req, res) => {
   `)
 })
 
-// ==================== WebSocket 路由 (Playwright WS) ====================
+// ==================== WebSocket Route (Playwright WS) ====================
 
-// 创建 HTTP 服务器
+// Create HTTP server
 const server = createServer(app)
 
-// 设置 WebSocket 升级处理
+// Setup WebSocket upgrade handling
 server.on("upgrade", (req, socket, head) => {
   const pathname = req.url
 
   if (pathname === "/ws" || pathname.startsWith("/ws?")) {
-    // Playwright WebSocket 连接
+    // Playwright WebSocket connection
     if (browserManager && browserManager.getWsEndpoint()) {
       const wsEndpoint = browserManager.getWsEndpoint()
-      // 使用 cdpProxy 处理 WebSocket 升级
+      // Use cdpProxy to handle WebSocket upgrade
       const targetUrl = new URL(wsEndpoint)
       const proxy = createProxyMiddleware({
         target: `ws://${targetUrl.host}`,
@@ -181,7 +181,7 @@ server.on("upgrade", (req, socket, head) => {
   }
 })
 
-// ==================== 启动服务 ====================
+// ==================== Start Service ====================
 
 async function start(browserMgr) {
   browserManager = browserMgr

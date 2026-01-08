@@ -2,7 +2,7 @@ const { chromium } = require("playwright")
 const fs = require("fs")
 const path = require("path")
 
-// 配置 - 从环境变量读取，提供默认值
+// Configuration - read from environment variables with defaults
 const CONFIG = {
   cdpPort: parseInt(process.env.CDP_PORT || "9222", 10),
   headless: process.env.HEADLESS === "true",
@@ -12,15 +12,16 @@ const CONFIG = {
     height: parseInt(process.env.WINDOW_HEIGHT || "720", 10),
   },
   startUrl: process.env.START_URL || "about:blank",
+  browserLang: process.env.BROWSER_LANG || "zh-CN",
 }
 
-// 浏览器状态
+// Browser state
 let browserContext = null
 let browserServer = null
 let currentPage = null
 
 /**
- * 获取浏览器状态
+ * Get browser status
  */
 function getStatus() {
   return {
@@ -28,25 +29,26 @@ function getStatus() {
     wsEndpoint: browserServer ? browserServer.wsEndpoint() : null,
     profileDir: CONFIG.profileDir,
     headless: CONFIG.headless,
+    browserLang: CONFIG.browserLang,
   }
 }
 
 /**
- * 获取 WebSocket 端点 URL
+ * Get WebSocket endpoint URL
  */
 function getWsEndpoint() {
   return browserServer ? browserServer.wsEndpoint() : null
 }
 
 /**
- * 获取当前浏览器上下文
+ * Get current browser context
  */
 function getBrowserContext() {
   return browserContext
 }
 
 /**
- * 启动 Playwright 浏览器
+ * Start Playwright browser
  */
 async function startBrowser() {
   if (browserContext) {
@@ -57,12 +59,17 @@ async function startBrowser() {
   try {
     console.log("Launching Playwright Chromium...")
 
-    // 确保 profile 目录存在
+    // Ensure profile directory exists
     if (!fs.existsSync(CONFIG.profileDir)) {
       fs.mkdirSync(CONFIG.profileDir, { recursive: true })
     }
 
-    // 先启动 browserServer 用于 WebSocket 连接
+    // Determine timezone based on browser language
+    const timezoneId = CONFIG.browserLang.startsWith("zh")
+      ? "Asia/Shanghai"
+      : "UTC"
+
+    // Start browserServer for WebSocket connections
     browserServer = await chromium.launchServer({
       headless: CONFIG.headless,
       args: [
@@ -74,6 +81,7 @@ async function startBrowser() {
         "--disable-session-crashed-bubble",
         "--disable-infobars",
         "--disable-blink-features=AutomationControlled",
+        `--lang=${CONFIG.browserLang}`,
       ],
     })
 
@@ -82,21 +90,21 @@ async function startBrowser() {
       browserServer.wsEndpoint()
     )
 
-    // 通过 WS 连接到浏览器
+    // Connect to browser via WS
     const browser = await chromium.connect(browserServer.wsEndpoint())
 
-    // 创建持久化上下文 (使用 CDP 连接到已存在的浏览器)
-    // 注意: launchServer 不支持 persistent context，所以 profile 需要通过其他方式持久化
-    // 这里我们使用默认 context
+    // Create context with locale settings
+    // Note: launchServer doesn't support persistent context, profile needs to be persisted by other means
+    // Here we use the default context
     browserContext =
       browser.contexts()[0] ||
       (await browser.newContext({
         viewport: CONFIG.windowSize,
-        locale: "zh-CN",
-        timezoneId: "Asia/Shanghai",
+        locale: CONFIG.browserLang,
+        timezoneId: timezoneId,
       }))
 
-    // 获取或创建页面
+    // Get or create page
     const pages = browserContext.pages()
     currentPage = pages.length > 0 ? pages[0] : await browserContext.newPage()
     await currentPage.goto(CONFIG.startUrl)
@@ -106,6 +114,7 @@ async function startBrowser() {
     console.log(`  - Profile Dir: ${CONFIG.profileDir}`)
     console.log(`  - CDP Port: ${CONFIG.cdpPort}`)
     console.log(`  - Start URL: ${CONFIG.startUrl}`)
+    console.log(`  - Browser Language: ${CONFIG.browserLang}`)
     console.log(`  - WS Endpoint: ${browserServer.wsEndpoint()}`)
 
     return browserContext
@@ -116,7 +125,7 @@ async function startBrowser() {
 }
 
 /**
- * 停止浏览器
+ * Stop browser
  */
 async function stopBrowser() {
   console.log("Stopping browser...")
@@ -139,7 +148,7 @@ async function stopBrowser() {
     console.log("Browser stopped")
   } catch (error) {
     console.error("Error stopping browser:", error)
-    // 强制清理引用
+    // Force cleanup references
     browserContext = null
     browserServer = null
     currentPage = null
@@ -148,32 +157,32 @@ async function stopBrowser() {
 }
 
 /**
- * 重启浏览器
+ * Restart browser
  */
 async function restartBrowser() {
   console.log("Restarting browser...")
   await stopBrowser()
-  // 等待一小段时间确保资源释放
+  // Wait a moment to ensure resources are released
   await new Promise((resolve) => setTimeout(resolve, 1000))
   await startBrowser()
   console.log("Browser restarted successfully")
 }
 
 /**
- * 主启动函数 - 用于独立运行模式
+ * Main startup function - for standalone mode
  */
 async function main() {
-  // 检查是否需要启动 gateway (默认启动)
+  // Check if gateway should be started (default: yes)
   const useGateway = process.env.USE_GATEWAY !== "false"
 
   if (useGateway) {
-    // 导入并启动 gateway server
+    // Import and start gateway server
     const gateway = require("/root/gateway-server")
 
-    // 先启动浏览器
+    // Start browser first
     await startBrowser()
 
-    // 然后启动 gateway，传入浏览器管理器
+    // Then start gateway, passing browser manager
     await gateway.start({
       getStatus,
       getWsEndpoint,
@@ -183,11 +192,11 @@ async function main() {
       restartBrowser,
     })
   } else {
-    // 独立模式，只启动浏览器
+    // Standalone mode, only start browser
     await startBrowser()
   }
 
-  // 优雅退出处理
+  // Graceful shutdown handling
   const cleanup = async () => {
     console.log("Shutting down...")
     await stopBrowser()
@@ -198,7 +207,7 @@ async function main() {
   process.on("SIGINT", cleanup)
 }
 
-// 导出模块接口
+// Export module interface
 module.exports = {
   CONFIG,
   getStatus,
@@ -209,7 +218,7 @@ module.exports = {
   restartBrowser,
 }
 
-// 如果直接运行此文件
+// If running this file directly
 if (require.main === module) {
   main().catch((error) => {
     console.error("Fatal error:", error)
