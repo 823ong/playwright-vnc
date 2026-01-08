@@ -16,15 +16,15 @@ Docker 容器中运行的 Playwright 浏览器，支持通过 VNC 和 Chrome Dev
 
 所有服务通过 **单一端口 8080** 对外暴露：
 
-| 路径 | 说明 |
-|------|------|
-| `/` | 服务首页，显示所有端点信息 |
-| `/vnc/*` | noVNC Web 界面访问 |
-| `/cdp/*` | CDP 调试接口 |
-| `/ws` | Playwright WebSocket 端点 |
-| `/api/status` | 获取服务状态 |
-| `/api/restart-browser` | 重启浏览器 |
-| `/api/clear-profile` | 清空 Profile 并重启 |
+| 路径                     | 说明                       |
+| ------------------------ | -------------------------- |
+| `/`                    | 服务首页，显示所有端点信息 |
+| `/vnc/*`               | noVNC Web 界面访问         |
+| `/cdp/*`               | CDP 调试接口               |
+| `/ws`                  | Playwright WebSocket 端点  |
+| `/api/status`          | 获取服务状态               |
+| `/api/restart-browser` | 重启浏览器                 |
+| `/api/clear-profile`   | 清空 Profile 并重启        |
 
 ## 快速开始
 
@@ -43,6 +43,9 @@ docker run -d \
   playwright-vnc
 ```
 
+> 你可以直接拉取镜像使用
+> docker pull ghcr.io/823ong/playwright-vnc:latest
+
 ### 访问服务
 
 - **服务首页**: http://localhost:8080/
@@ -52,15 +55,15 @@ docker run -d \
 
 ## 环境变量配置
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `GATEWAY_PORT` | 统一网关端口 | 8080 |
-| `CDP_PORT` | CDP 内部端口 | 9222 |
-| `VNC_PORT` | VNC 内部端口 | 6080 |
-| `HEADLESS` | 是否无头模式 | false |
-| `WINDOW_WIDTH` | 浏览器窗口宽度 | 1280 |
-| `WINDOW_HEIGHT` | 浏览器窗口高度 | 720 |
-| `START_URL` | 启动时打开的 URL | about:blank |
+| 变量              | 说明             | 默认值      |
+| ----------------- | ---------------- | ----------- |
+| `GATEWAY_PORT`  | 统一网关端口     | 8080        |
+| `CDP_PORT`      | CDP 内部端口     | 9222        |
+| `VNC_PORT`      | VNC 内部端口     | 6080        |
+| `HEADLESS`      | 是否无头模式     | false       |
+| `WINDOW_WIDTH`  | 浏览器窗口宽度   | 1280        |
+| `WINDOW_HEIGHT` | 浏览器窗口高度   | 720         |
+| `START_URL`     | 启动时打开的 URL | about:blank |
 
 ### 配置示例
 
@@ -156,6 +159,7 @@ curl http://localhost:8080/api/status
 ```
 
 响应示例：
+
 ```json
 {
   "status": "running",
