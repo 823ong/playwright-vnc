@@ -1,125 +1,230 @@
 const { chromium } = require("playwright")
-const { spawn } = require("child_process")
+const fs = require("fs")
+const path = require("path")
 
-// 配置 - 从环境变量读取，提供默认值
+// Configuration - read from environment variables with defaults
 const CONFIG = {
-  cdpPort: parseInt(process.env.CDP_PORT || "9222", 10), // Chrome DevTools Protocol 端口 (本地监听)
-  externalPort: parseInt(process.env.EXTERNAL_PORT || "9223", 10), // 外部访问端口 (通过 socat 转发)
-  headless: process.env.HEADLESS === "true", // 使用有头模式
+  cdpPort: parseInt(process.env.CDP_PORT || "9222", 10),
+  wsPort: parseInt(process.env.WS_PORT || "3000", 10), // Fixed WebSocket port for Playwright
+  headless: process.env.HEADLESS === "true",
+  profileDir: process.env.PROFILE_DIR || "/app/profile",
   windowSize: {
     width: parseInt(process.env.WINDOW_WIDTH || "1280", 10),
     height: parseInt(process.env.WINDOW_HEIGHT || "720", 10),
   },
-  startUrl: process.env.START_URL || "about:blank", // 默认打开页面
+  startUrl: process.env.START_URL || "about:blank",
+  browserLang: process.env.BROWSER_LANG || "zh-CN",
 }
 
-// 启动 socat 端口转发
-function startPortForwarder() {
-  console.log(
-    `Starting socat port forwarder: 0.0.0.0:${CONFIG.externalPort} -> 127.0.0.1:${CONFIG.cdpPort}`
-  )
+// Browser state
+let browserContext = null
+let browserServer = null
+let currentPage = null
 
-  const socat = spawn(
-    "socat",
-    [
-      `TCP-LISTEN:${CONFIG.externalPort},fork,reuseaddr,bind=0.0.0.0`,
-      `TCP:127.0.0.1:${CONFIG.cdpPort}`,
-    ],
-    {
-      stdio: "inherit",
-    }
-  )
-
-  socat.on("error", (err) => {
-    console.error("Failed to start socat:", err.message)
-    console.error("Please ensure socat is installed: apt-get install socat")
-  })
-
-  socat.on("exit", (code) => {
-    if (code !== 0 && code !== null) {
-      console.error(`socat exited with code ${code}`)
-    }
-  })
-
-  return socat
+/**
+ * Get browser status
+ */
+function getStatus() {
+  return {
+    running: browserContext !== null,
+    wsEndpoint: browserServer ? browserServer.wsEndpoint() : null,
+    profileDir: CONFIG.profileDir,
+    headless: CONFIG.headless,
+    browserLang: CONFIG.browserLang,
+  }
 }
 
-// 启动Playwright浏览器
+/**
+ * Get WebSocket endpoint URL
+ */
+function getWsEndpoint() {
+  return browserServer ? browserServer.wsEndpoint() : null
+}
+
+/**
+ * Get current browser context
+ */
+function getBrowserContext() {
+  return browserContext
+}
+
+/**
+ * Start Playwright browser
+ */
 async function startBrowser() {
-  let socatProcess = null
+  if (browserContext) {
+    console.log("Browser already running")
+    return browserContext
+  }
 
   try {
-    console.log("Launching Playwright Chromium with persistent context...")
+    console.log("Launching Playwright Chromium...")
 
-    // 使用 launchPersistentContext 启动带用户数据目录的浏览器
-    const context = await chromium.launchPersistentContext("/app/profile", {
+    // Ensure profile directory exists
+    if (!fs.existsSync(CONFIG.profileDir)) {
+      fs.mkdirSync(CONFIG.profileDir, { recursive: true })
+    }
+
+    // Determine timezone based on browser language
+    const timezoneId = CONFIG.browserLang.startsWith("zh")
+      ? "Asia/Shanghai"
+      : "UTC"
+
+    // Start browserServer for WebSocket connections
+    browserServer = await chromium.launchServer({
       headless: CONFIG.headless,
-      viewport: CONFIG.windowSize,
-      locale: "zh-CN",
-      timezoneId: "Asia/Shanghai",
+      port: CONFIG.wsPort, // Fixed port for WebSocket connections
       args: [
-        // 窗口配置
         `--window-size=${CONFIG.windowSize.width},${CONFIG.windowSize.height}`,
         "--window-position=0,0",
-
-        // CDP调试端口 - 只监听本地，通过 socat 转发外部访问
         `--remote-debugging-port=${CONFIG.cdpPort}`,
-
-        // 其他有用的参数
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-session-crashed-bubble",
         "--disable-infobars",
         "--disable-blink-features=AutomationControlled",
+        `--lang=${CONFIG.browserLang}`,
       ],
     })
 
-    // 启动 socat 端口转发
-    socatProcess = startPortForwarder()
+    console.log(
+      "Browser server started, WS endpoint:",
+      browserServer.wsEndpoint()
+    )
 
-    // 获取或创建页面
-    const pages = context.pages()
-    const page = pages.length > 0 ? pages[0] : await context.newPage()
-    await page.goto(CONFIG.startUrl)
+    // Connect to browser via WS
+    const browser = await chromium.connect(browserServer.wsEndpoint())
+
+    // Create context with locale settings
+    // Note: launchServer doesn't support persistent context, profile needs to be persisted by other means
+    // Here we use the default context
+    browserContext =
+      browser.contexts()[0] ||
+      (await browser.newContext({
+        viewport: CONFIG.windowSize,
+        locale: CONFIG.browserLang,
+        timezoneId: timezoneId,
+      }))
+
+    // Get or create page
+    const pages = browserContext.pages()
+    currentPage = pages.length > 0 ? pages[0] : await browserContext.newPage()
+    await currentPage.goto(CONFIG.startUrl)
 
     console.log("Browser started successfully!")
-    console.log(`- Headless: ${CONFIG.headless}`)
-    console.log(`- User Data Dir: /app/profile`)
-    console.log(`- CDP Port (internal): ${CONFIG.cdpPort}`)
-    console.log(`- CDP Port (external): ${CONFIG.externalPort}`)
-    console.log(`- Start URL: ${CONFIG.startUrl}`)
-    console.log("")
-    console.log(
-      "You can connect to this browser from outside the container using:"
-    )
-    console.log(
-      `  - Java: chromium().connectOverCDP("http://host:${CONFIG.externalPort}")`
-    )
-    console.log(
-      `  - Node.js: await chromium.connectOverCDP("http://host:${CONFIG.externalPort}")`
-    )
-    console.log(
-      `  - Puppeteer: await puppeteer.connect({browserURL: 'http://host:${CONFIG.externalPort}'})`
-    )
-    console.log(`  - CDP JSON: http://host:${CONFIG.externalPort}/json`)
+    console.log(`  - Headless: ${CONFIG.headless}`)
+    console.log(`  - Profile Dir: ${CONFIG.profileDir}`)
+    console.log(`  - CDP Port: ${CONFIG.cdpPort}`)
+    console.log(`  - WS Port: ${CONFIG.wsPort}`)
+    console.log(`  - Start URL: ${CONFIG.startUrl}`)
+    console.log(`  - Browser Language: ${CONFIG.browserLang}`)
+    console.log(`  - WS Endpoint: ${browserServer.wsEndpoint()}`)
 
-    // 保持进程运行
-    const cleanup = async () => {
-      console.log("Shutting down...")
-      if (socatProcess) {
-        socatProcess.kill()
-      }
-      await context.close()
-      process.exit(0)
-    }
-
-    process.on("SIGTERM", cleanup)
-    process.on("SIGINT", cleanup)
+    return browserContext
   } catch (error) {
     console.error("Failed to start browser:", error)
-    process.exit(1)
+    throw error
   }
 }
 
-// 启动
-startBrowser()
+/**
+ * Stop browser
+ */
+async function stopBrowser() {
+  console.log("Stopping browser...")
+
+  try {
+    if (browserContext) {
+      const browser = browserContext.browser()
+      if (browser) {
+        await browser.close()
+      }
+      browserContext = null
+    }
+
+    if (browserServer) {
+      await browserServer.close()
+      browserServer = null
+    }
+
+    currentPage = null
+    console.log("Browser stopped")
+  } catch (error) {
+    console.error("Error stopping browser:", error)
+    // Force cleanup references
+    browserContext = null
+    browserServer = null
+    currentPage = null
+    throw error
+  }
+}
+
+/**
+ * Restart browser
+ */
+async function restartBrowser() {
+  console.log("Restarting browser...")
+  await stopBrowser()
+  // Wait a moment to ensure resources are released
+  await new Promise((resolve) => setTimeout(resolve, 1000))
+  await startBrowser()
+  console.log("Browser restarted successfully")
+}
+
+/**
+ * Main startup function - for standalone mode
+ */
+async function main() {
+  // Check if gateway should be started (default: yes)
+  const useGateway = process.env.USE_GATEWAY !== "false"
+
+  if (useGateway) {
+    // Import and start gateway server
+    const gateway = require("/root/gateway-server")
+
+    // Start browser first
+    await startBrowser()
+
+    // Then start gateway, passing browser manager
+    await gateway.start({
+      getStatus,
+      getWsEndpoint,
+      getBrowserContext,
+      startBrowser,
+      stopBrowser,
+      restartBrowser,
+    })
+  } else {
+    // Standalone mode, only start browser
+    await startBrowser()
+  }
+
+  // Graceful shutdown handling
+  const cleanup = async () => {
+    console.log("Shutting down...")
+    await stopBrowser()
+    process.exit(0)
+  }
+
+  process.on("SIGTERM", cleanup)
+  process.on("SIGINT", cleanup)
+}
+
+// Export module interface
+module.exports = {
+  CONFIG,
+  getStatus,
+  getWsEndpoint,
+  getBrowserContext,
+  startBrowser,
+  stopBrowser,
+  restartBrowser,
+}
+
+// If running this file directly
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Fatal error:", error)
+    process.exit(1)
+  })
+}

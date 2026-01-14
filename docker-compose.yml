@@ -1,0 +1,30 @@
+services:
+  playwright-browser:
+    container_name: playwright-browser
+    image: playwright-vnc:latest
+    ports:
+      - "8081:8080"
+      - "6080:6080"
+    environment:
+      - HEADLESS=false
+      # Screen/window resolution (shared by VNC and browser)
+      - SCREEN_WIDTH=1280
+      - SCREEN_HEIGHT=720
+      - START_URL=about:blank
+      # Browser language (default: zh-CN, options: en-US, ja-JP, etc.)
+      - BROWSER_LANG=zh-CN
+      # VNC password (default: CHANGE_ME, please change it!)
+      - VNC_PASSWORD=CHANGE_ME
+    volumes:
+      # Persist browser profile data
+      - ./data/profile:/app/profile
+    restart: unless-stopped
+    # Shared memory to prevent Chromium crashes
+    shm_size: "2gb"
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
